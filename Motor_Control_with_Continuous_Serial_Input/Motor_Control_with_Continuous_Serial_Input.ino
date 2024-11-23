@@ -40,12 +40,12 @@ void loop() {
     lastCommandTime = millis();
     
     switch(lastCommand) {
-      case 'w':
+      case 's':
         moveForward();
         Serial.println("Moving forward");
         break;
         
-      case 's':
+      case 'w':
         moveBackward();
         Serial.println("Moving backward");
         break;

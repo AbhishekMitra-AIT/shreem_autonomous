@@ -1,0 +1,130 @@
+libcamera-vid -t 0 -inline --codec h264 -o - | nc -k -l 8554
+libcamera-vid -t 0 --inline --codec h264 --libav-format mp4 -o - | nc -k -l 8554
+libcamera-vid -t 0 -o - | cvlc stream:///dev/stdin --sout '#standard{access=http,mux=ts,dst=:8090}' :demux=h264
+libcamera-vid -t 0 -o - | cvlc stream:///dev/stdin --sout '#standard{access=http,mux=ts,dst=:8090}' :demux=h264
+libcamera-vid -t 0 -o - | ffmpeg -i - -vcodec libx264 -preset ultrafast -tune zerolatency -b:v 600k -f mpegts http://0.0.0.0:8090
+libcamera-vid -t 0 --inline --listen -o tcp://0.0.0.0:8090
+libcamera-vid -t 0 --inline --listen -o - | cvlc -vvv stream:///dev/stdin --sout '#standard{access=http,mux=mpjpeg,dst=:8080}'
+
+https://www.raspberrypi.com/documentation/computers/camera_software.html#rpicam-apps
+rpicam-hello --camera 0 --timeout 0
+rpicam-hello --list
+
+https://github.com/raspberrypi/picamera2/blob/main/examples/opencv_face_detect.py
+https://datasheets.raspberrypi.com/camera/picamera2-manual.pdf
+https://www.raspberrypi.com/documentation/computers/camera_software.html#build-libcamera-and-rpicam-apps
+
+------------------------------------------------------------------
+toggling GPIO - refer below website
+
+https://electropeak.com/learn/tutorial-raspberry-pi-gpio-programming-using-python-full-guide/
+
+--------------------------------------------------------------------
+
+------------------------------------------------------------------
+Computer vision YOLO 
+
+https://core-electronics.com.au/guides/raspberry-pi/getting-started-with-yolo-object-and-animal-recognition-on-the-raspberry-pi/
+
+--------------------------------------------------------------------
+#!/usr/bin/python3
+
+import cv2
+import numpy as np
+from picamera2 import Picamera2
+import datetime
+import os
+
+# Load the face and smile detectors
+face_detector = cv2.CascadeClassifier("/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml")
+smile_detector = cv2.CascadeClassifier("/usr/share/opencv4/haarcascades/haarcascade_smile.xml")
+
+# Check if the classifiers are loaded correctly
+if face_detector.empty() or smile_detector.empty():
+    print("Error loading Haar cascade files.")
+    exit(1)
+
+# Initialize the cameras
+camera_left = Picamera2(camera_num=0)  # Left camera
+camera_right = Picamera2(camera_num=1)  # Right camera
+
+camera_left.configure(camera_left.create_preview_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
+camera_right.configure(camera_right.create_preview_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
+
+camera_left.start()
+camera_right.start()
+
+# Create a directory to save captured photos
+if not os.path.exists("captured_smiles"):
+    os.makedirs("captured_smiles")
+
+# Stereo vision parameters (tune these according to your setup)
+focal_length = 700  # Example value; should be the focal length of the cameras in pixels
+baseline = 0.06     # Distance between the two cameras in meters (adjust as per your setup)
+
+try:
+    while True:
+        # Capture frames from both cameras
+        frame_left = camera_left.capture_array()
+        frame_right = camera_right.capture_array()
+        
+        # Convert frames to grayscale
+        grey_left = cv2.cvtColor(frame_left, cv2.COLOR_BGR2GRAY)
+        grey_right = cv2.cvtColor(frame_right, cv2.COLOR_BGR2GRAY)
+        
+        # Detect faces in the left frame (you can choose either camera for face detection)
+        faces = face_detector.detectMultiScale(grey_left, scaleFactor=1.3, minNeighbors=5)
+        
+        for (x, y, w, h) in faces:
+            # Draw a yellow rectangle around the face on the left frame
+            cv2.rectangle(frame_left, (x, y), (x + w, y + h), (0, 255, 255), 2)
+            print("Face detected.")
+            
+            # Extract region of interest (ROI) for smile detection and distance calculation
+            roi_gray_left = grey_left[y:y + h, x:x + w]
+            roi_color_left = frame_left[y:y + h, x:x + w]
+            
+            # Detect smiles in the ROI
+            smiles = smile_detector.detectMultiScale(roi_gray_left, scaleFactor=1.8, minNeighbors=20)
+            
+            for (sx, sy, sw, sh) in smiles:
+                # Change face rectangle to green when a smile is detected
+                cv2.rectangle(frame_left, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+                # Display "Smile Detected" message
+                cv2.putText(frame_left, "Thanks for Smiling..", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
+                print("Smile detected.")
+                
+                # Take a photo when a smile is detected
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+                photo_path = f"captured_smiles/smile_{timestamp}.jpg"
+                cv2.imwrite(photo_path, frame_left)
+                print(f"Photo saved as {photo_path}")
+                
+                # Break to avoid capturing multiple photos per smile detection
+                break
+
+            # Stereo matching: Find the same face in the right frame
+            face_right_x = x  # Approximate x-coordinate in the right frame; tuning may be needed
+            disparity = abs(x - face_right_x)
+            
+            # Calculate distance using the stereo vision formula
+            if disparity != 0:
+                distance = (focal_length * baseline) / disparity
+                cv2.putText(frame_left, f"Distance: {distance:.2f} m", (x, y + h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                print(f"Distance to face: {distance:.2f} meters")
+
+        # Display the images from both cameras
+        combined_view = np.hstack((frame_left, frame_right))
+        cv2.imshow("Stereo Camera View", combined_view)
+        
+        # Exit if 'q' is pressed
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+finally:
+    # Cleanup
+    cv2.destroyAllWindows()
+    camera_left.stop()
+    camera_right.stop()
+
